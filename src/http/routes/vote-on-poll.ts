@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { randomUUID } from "crypto";
 import { z } from "zod";
 
-import { prisma } from "../../lib/prisma";
+import { prisma, redis } from "../../lib";
 
 const ONE_MONTH_IN_SECONDS = 60 * 60 * 24 * 30;
 
@@ -41,12 +41,22 @@ export const voteOnPoll = async (app: FastifyInstance) => {
         .status(400)
         .send({ error: "User has already voted on this poll" });
 
-    if (userPreviousVoteOnPoll)
-      await prisma.vote.delete({ where: { id: userPreviousVoteOnPoll.id } });
+    if (userPreviousVoteOnPoll) {
+      const { pollOptionId: previousPollOptionId, id } = userPreviousVoteOnPoll;
+
+      await prisma.vote.delete({ where: { id } });
+      await redis.zincrby(
+        `poll:${pollId}`,
+        -1,
+        `option:${previousPollOptionId}`
+      );
+    }
 
     reply.setCookie("sessionId", sessionId, cookieSettings);
 
     await prisma.vote.create({ data: { pollOptionId, sessionId, pollId } });
+
+    await redis.zincrby(`poll:${pollId}`, 1, `option:${pollOptionId}`);
 
     return reply.status(201).send();
   });
