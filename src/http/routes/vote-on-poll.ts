@@ -3,6 +3,7 @@ import { randomUUID } from "crypto";
 import { z } from "zod";
 
 import { prisma, redis } from "../../lib";
+import { votingPublisherSubscriber } from "../../utils/voting-publisher-subscriber";
 
 const ONE_MONTH_IN_SECONDS = 60 * 60 * 24 * 30;
 
@@ -45,18 +46,33 @@ export const voteOnPoll = async (app: FastifyInstance) => {
       const { pollOptionId: previousPollOptionId, id } = userPreviousVoteOnPoll;
 
       await prisma.vote.delete({ where: { id } });
-      await redis.zincrby(
+      const previousOptionVotes = await redis.zincrby(
         `poll:${pollId}`,
         -1,
         `option:${previousPollOptionId}`
       );
+      votingPublisherSubscriber.publish(pollId, {
+        votes: Number(previousOptionVotes),
+        pollOptionId: previousPollOptionId,
+        pollId,
+      });
     }
 
     reply.setCookie("sessionId", sessionId, cookieSettings);
 
     await prisma.vote.create({ data: { pollOptionId, sessionId, pollId } });
 
-    await redis.zincrby(`poll:${pollId}`, 1, `option:${pollOptionId}`);
+    const votes = await redis.zincrby(
+      `poll:${pollId}`,
+      1,
+      `option:${pollOptionId}`
+    );
+
+    votingPublisherSubscriber.publish(pollId, {
+      votes: Number(votes),
+      pollOptionId,
+      pollId,
+    });
 
     return reply.status(201).send();
   });
